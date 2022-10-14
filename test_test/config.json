@@ -1,0 +1,20 @@
+{
+    "Port": 49999,
+    "RecTimeout": 1200000,
+    "TxSize": 1000,
+    "VchKey": "!",
+    "LogPath": "C:\\Temp\\Logs\\",
+    "ServerUrl": "http://app.barracuda.link:9293/Terminal.svc/",
+    "ServerAuthUrl": "http://app.barracuda.link:9293/Terminal.svc/",
+    "RedirectAuth": 1,
+    "RedirectAuthClient": 1,
+    "RedirectAuthClientList": "1,90",
+    "ClienteId": 0,
+    "ServicoId": 1636,
+    "Track": 1,
+    "ConfigUrl": "http://jconfigmob.cechire.com/Configuracao.svc/ConfiguracaoServico",
+    "AmqpUrl": "amqps://dev:123456789101112@b-1725aa7f-01fa-4806-937d-69ba44febe3a-1.mq.us-east-1.amazonaws.com:5671/",
+    "AmqpTimeout": 15000,
+    "FilaLog": "ms-log",
+    "AmqpEnableLog": 0
+}
