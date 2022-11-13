@@ -1,8 +1,7 @@
 //#![warn(rust_2018_idioms)]
 
 use futures::TryFutureExt;
-use serde::{Serialize, Deserialize};
-
+use serde::{Deserialize, Serialize};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -11,10 +10,35 @@ use core::time;
 //use std::env;
 use std::error::Error;
 //use std::io::ErrorKind;
-use std::{thread, mem};
 use std::thread::sleep;
+use std::{mem, thread};
 //use std::time::Duration;
+use std::fs::File;
+use std::io::BufReader;
+use std::path::Path;
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct ProxyConfig {
+    port: i32,
+    rec_timeout: u32,
+    tx_size: u32,
+    vch_key: String,
+    log_path: String,
+    server_url: String,
+    server_auth_url: String,
+    redirect_auth: i32,
+    redirect_auth_client: i32,
+    redirect_auth_client_list: String,
+    cliente_id: i32,
+    servico_id: i32,
+    track: i32,
+    config_url: String,
+    amqp_url: String,
+    amqp_timeout: u32,
+    fila_log: String,
+    amqp_enable_log: i32,
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Megarequest {
@@ -44,7 +68,8 @@ struct Megaresponse {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    loop{
+    let config: ProxyConfig = read_config_from_file("./config.json").unwrap();
+    loop {
         let tcp_listener = TcpListener::bind("127.0.0.1:58123").await?;
 
         loop {
@@ -52,17 +77,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
             // A new task is spawned for each inbound socket. The socket is
             // moved to the new task and processed there.
             tokio::spawn(async move {
-                handle_request(socket).await.unwrap();
+                handle_request(socket, &config).await.unwrap();
             });
             //sleep(time::Duration::from_millis(10));
         }
     }
 }
 
-async fn handle_request(mut socket: TcpStream) -> Result<(), Box<dyn Error>> {
-
+async fn handle_request(mut socket: TcpStream, config: &ProxyConfig) -> Result<(), Box<dyn Error>> {
     let mut rec_buffer: Vec<u8> = vec![0; 4096]; //MAX_TX Terminal
-    //Maioria dos requests ficam no maximo em 1k
+                                                 //Maioria dos requests ficam no maximo em 1k
     let mut rec_data: Vec<u8> = vec![0; 1024];
 
     let mut total_bytes = 0;
@@ -76,13 +100,12 @@ async fn handle_request(mut socket: TcpStream) -> Result<(), Box<dyn Error>> {
                     return Ok(());
                 }
                 count //return count
-            },
+            }
             Err(e) => {
                 eprintln!("Falha ao ler do socket; err = {:?}", e);
                 return Ok(());
-            },
+            }
         };
-
 
         //Fazer a conta dos bytes recebidos em caso de sends separados
         total_bytes += bytes_read;
@@ -99,7 +122,7 @@ async fn handle_request(mut socket: TcpStream) -> Result<(), Box<dyn Error>> {
         let is_new_end: bool = rec_data.ends_with(b"<EOF><EOM>");
 
         if is_new_end || is_old_end {
-            let retorno = process_request(rec_data.clone(), is_new_end);
+            let retorno = process_request(rec_data.clone(), is_new_end).await?;
             match retorno {
                 Ok(response) => {
                     let response_bytes = response.str_retorno.to_owned().unwrap().into_bytes();
@@ -107,61 +130,40 @@ async fn handle_request(mut socket: TcpStream) -> Result<(), Box<dyn Error>> {
                     socket.write_all(&response_cript);
                     socket.flush();
                     println!("Resposta enviada: {:?}", response);
-                },
+                }
                 Err(e) => {
                     eprintln!("Falha ao processar request: {:?}", e);
                     return Ok(());
-                },
+                }
             }
 
             break;
         }
-
-
     }
-
 
     Ok(())
 }
 
-fn process_request(request: Vec<u8>, is_new_end: bool) -> Result<Megaresponse, Box<dyn Error>> {
-    let mut retorno = Megaresponse {
-        int_codigo_retorno: 0,
-        is_error: false,
-        str_error_message: None,
-        str_retorno: None,
-        bin_retorno: None,
+async fn process_request(
+    request: Vec<u8>,
+    is_new_end: bool,
+) -> Result<Megaresponse, Box<dyn Error>> {
+    let send_obj = Megarequest {
+        chr_serial: "1234567890123456".to_string(),
+        cliente_id: 1,
+        sistema_id: 1,
+        str_mensagem_terminal: String::from_utf8(request)?,
     };
 
-    let request_str = String::from_utf8(request).unwrap();
-    let request_str = request_str.replace("<EOF><EOM>", "");
-    let request_str = request_str.replace("<EOF><EOT>", "");
+    let response: Megaresponse = reqwest::Client::new()
+        .post("https://extapp.gwsvc.de/api/ConfigAPI/SetSistemaVersao/")
+        .json(&send_obj)
+        .send()
+        .await?
+        .json()
+        .await?;
 
-    let request: Megarequest = serde_json::from_str(&request_str).unwrap();
-
-    println!("Request: {:?}", request);
-
-    let mut response = Megaresponse {
-        int_codigo_retorno: 0,
-        is_error: false,
-        str_error_message: None,
-        str_retorno: None,
-        bin_retorno: None,
-    };
-
-    if request.sistema_id == 1 {
-        response.int_codigo_retorno = 1;
-        response.is_error = true;
-        response.str_error_message = Some("Sistema não encontrado".to_string());
-    } else {
-        response.int_codigo_retorno = 0;
-        response.is_error = false;
-        response.str_retorno = Some("Sucesso".to_string());
-    }
-
-    retorno = response;
-
-    Ok(retorno)
+    Ok(response)
 }
 
 fn handle_response(mut socket: TcpStream, mensagen: String) -> Result<(), Box<dyn Error>> {
@@ -172,7 +174,6 @@ fn handle_response(mut socket: TcpStream, mensagen: String) -> Result<(), Box<dy
     socket.flush();
 
     Ok(())
-   
 }
 
 fn cipher_vec(vec: Vec<u8>, key: u8) -> Vec<u8> {
@@ -181,4 +182,16 @@ fn cipher_vec(vec: Vec<u8>, key: u8) -> Vec<u8> {
         vec_cript[i] ^= key;
     }
     vec_cript
+}
+
+fn read_config_from_file<P: AsRef<Path>>(path: P) -> Result<ProxyConfig, Box<dyn Error>> {
+    // Open the file in read-only mode with buffer.
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+
+    // Read the JSON contents of the file as an instance of `ProxyConfig`.
+    let pc = serde_json::from_reader(reader)?;
+
+    // Return the `ProxyConfig`.
+    Ok(pc)
 }

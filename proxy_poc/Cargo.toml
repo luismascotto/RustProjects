@@ -12,3 +12,4 @@ tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7.4", features = ["full"] }
 tokio-stream = { version = "0.1" }
 futures = { version = "0.3.0", features = ["thread-pool"]}
+reqwest = { version = "0.11", features = ["json"] }
