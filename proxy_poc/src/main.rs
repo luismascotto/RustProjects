@@ -19,6 +19,8 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 
+use once_cell::sync::Lazy;
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase")]
 struct ProxyConfig {
@@ -68,26 +70,36 @@ struct Megaresponse {
     bin_retorno: Option<Vec<u8>>,
 }
 
+static GLOBAL_CONFIG: Lazy<ProxyConfig> = Lazy::new(||read_config_from_file("./config.json").unwrap());
+fn read_config_from_file<P: AsRef<Path>>(path: P) -> Result<ProxyConfig, Box<dyn Error>> {
+    // Open the file in read-only mode with buffer.
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+
+    // Read the JSON contents of the file as an instance of `ProxyConfig`.
+    let pc = serde_json::from_reader(reader)?;
+
+    // Return the `ProxyConfig`.
+    Ok(pc)
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let config: ProxyConfig = read_config_from_file("./config.json").unwrap();
-    let url_listener = format!("127.0.0.1:{}", config.port); 
-    let url_mega = format!("{}:{}", config.server_auth_url, config.port);
     loop {
-        let tcp_listener = TcpListener::bind(url_listener).await?;
+        let tcp_listener = TcpListener::bind(format!("127.0.0.1:{}", GLOBAL_CONFIG.port)).await?;
         loop {
             let (socket, _) = tcp_listener.accept().await?;
             // A new task is spawned for each inbound socket. The socket is
             // moved to the new task and processed there.
             tokio::spawn(async move {
-                handle_request(socket, &url_mega).await.unwrap();
+                handle_request(socket).await.unwrap();
             });
             //sleep(time::Duration::from_millis(10));
         }
     }
 }
 
-async fn handle_request(mut socket: TcpStream, config_url: &String) -> Result<(), Box<dyn Error>> {
+async fn handle_request(mut socket: TcpStream) -> Result<(), Box<dyn Error>> {
     let mut rec_buffer: Vec<u8> = vec![0; 4096]; //MAX_TX Terminal
                                                  //Maioria dos requests ficam no maximo em 1k
     let mut rec_data: Vec<u8> = vec![0; 1024];
@@ -118,19 +130,20 @@ async fn handle_request(mut socket: TcpStream, config_url: &String) -> Result<()
         if total_bytes > rec_data.len() {
             rec_data.resize(total_bytes - rec_data.len() + 1, 0);
         }
-        let mut rec_cript = cipher_vec(rec_buffer.clone(), b'!');
+        let mut rec_cript = cipher_vec(rec_buffer.clone(), GLOBAL_CONFIG.vch_key.clone().into_bytes()[0]);
         rec_data.append(&mut rec_cript);
 
         let is_old_end: bool = rec_data.ends_with(b"<EOF><EOT>");
         let is_new_end: bool = rec_data.ends_with(b"<EOF><EOM>");
 
         if is_new_end || is_old_end {
-            let retorno = process_request(rec_data.clone(), config_url).await;
+            let retorno = process_request(rec_data.clone()).await;
             match retorno {
                 Ok(response) => {
                     let response_bytes = response.str_retorno.to_owned().unwrap().into_bytes();
-                    let response_cript = cipher_vec(response_bytes.clone(), b'!');
-                    socket.write_all(&response_cript).await?;
+                    let response_cript = cipher_vec(response_bytes.clone(), GLOBAL_CONFIG.vch_key.clone().into_bytes()[0]);
+                    let response_final = insert_send_data_len(response_cript);
+                    socket.write_all(&response_final).await?;
                     socket.flush().await?;
                     println!("Resposta enviada: {:?}", response);
                 }
@@ -147,8 +160,8 @@ async fn handle_request(mut socket: TcpStream, config_url: &String) -> Result<()
     Ok(())
 }
 
-async fn process_request(request: Vec<u8>, url_destino: &String) -> Result<Megaresponse, reqwest::Error> {
-
+async fn process_request(request: Vec<u8>) -> Result<Megaresponse, reqwest::Error> {
+    //TODO - Quebrar mensagem p pegar tipo, cliente e serial
     let send_obj = Megarequest {
         chr_serial: "1234567890123456".to_string(),
         cliente_id: 1,
@@ -157,7 +170,7 @@ async fn process_request(request: Vec<u8>, url_destino: &String) -> Result<Megar
     };
 
     let response: Megaresponse = reqwest::Client::new()
-        .post(url_destino)
+        .post(GLOBAL_CONFIG.config_url.as_str())
         .json(&send_obj)
         .send()
         .await?
@@ -167,15 +180,6 @@ async fn process_request(request: Vec<u8>, url_destino: &String) -> Result<Megar
     Ok(response)
 }
 
-// async fn handle_response(mut socket: TcpStream, mensagem_retorno: String) -> Result<(), Box<dyn Error>> {
-//     let mut buf = [0; 1024];
-//     let mut response = String::new();
-
-//     socket.write_all(mensagem_retorno.as_bytes()).await?;
-//     socket.flush().await?;
-
-//     Ok(())
-// }
 
 fn cipher_vec(vec: Vec<u8>, key: u8) -> Vec<u8> {
     let mut vec_cript = vec.clone();
@@ -185,14 +189,10 @@ fn cipher_vec(vec: Vec<u8>, key: u8) -> Vec<u8> {
     vec_cript
 }
 
-fn read_config_from_file<P: AsRef<Path>>(path: P) -> Result<ProxyConfig, Box<dyn Error>> {
-    // Open the file in read-only mode with buffer.
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-
-    // Read the JSON contents of the file as an instance of `ProxyConfig`.
-    let pc = serde_json::from_reader(reader)?;
-
-    // Return the `ProxyConfig`.
-    Ok(pc)
+fn insert_send_data_len(vec: Vec<u8>) -> Vec<u8> {
+    let mut vec_size = vec.clone();
+    let size = vec.len();
+    let size_bytes = size.to_be_bytes();
+    vec_size.splice(0..0, size_bytes.iter().cloned());
+    vec_size
 }
