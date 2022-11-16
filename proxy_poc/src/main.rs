@@ -1,23 +1,25 @@
 //#![warn(rust_2018_idioms)]
 
-use futures::TryFutureExt;
+//use reqwest::IntoUrl;
+//use futures::task::ArcWake;
+//use futures::TryFutureExt;
 use serde::{Deserialize, Serialize};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-use core::time;
+//use core::time;
 //use std::env;
 use std::error::Error;
 //use std::io::ErrorKind;
-use std::thread::sleep;
-use std::{mem, thread};
+//use std::thread::sleep;
+//use std::{mem, thread};
 //use std::time::Duration;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase")]
 struct ProxyConfig {
     port: i32,
@@ -69,22 +71,23 @@ struct Megaresponse {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let config: ProxyConfig = read_config_from_file("./config.json").unwrap();
+    let url_listener = format!("127.0.0.1:{}", config.port); 
+    let url_mega = format!("{}:{}", config.server_auth_url, config.port);
     loop {
-        let tcp_listener = TcpListener::bind("127.0.0.1:58123").await?;
-
+        let tcp_listener = TcpListener::bind(url_listener).await?;
         loop {
             let (socket, _) = tcp_listener.accept().await?;
             // A new task is spawned for each inbound socket. The socket is
             // moved to the new task and processed there.
             tokio::spawn(async move {
-                handle_request(socket, &config).await.unwrap();
+                handle_request(socket, &url_mega).await.unwrap();
             });
             //sleep(time::Duration::from_millis(10));
         }
     }
 }
 
-async fn handle_request(mut socket: TcpStream, config: &ProxyConfig) -> Result<(), Box<dyn Error>> {
+async fn handle_request(mut socket: TcpStream, config_url: &String) -> Result<(), Box<dyn Error>> {
     let mut rec_buffer: Vec<u8> = vec![0; 4096]; //MAX_TX Terminal
                                                  //Maioria dos requests ficam no maximo em 1k
     let mut rec_data: Vec<u8> = vec![0; 1024];
@@ -122,13 +125,13 @@ async fn handle_request(mut socket: TcpStream, config: &ProxyConfig) -> Result<(
         let is_new_end: bool = rec_data.ends_with(b"<EOF><EOM>");
 
         if is_new_end || is_old_end {
-            let retorno = process_request(rec_data.clone(), is_new_end).await?;
+            let retorno = process_request(rec_data.clone(), config_url).await;
             match retorno {
                 Ok(response) => {
                     let response_bytes = response.str_retorno.to_owned().unwrap().into_bytes();
                     let response_cript = cipher_vec(response_bytes.clone(), b'!');
-                    socket.write_all(&response_cript);
-                    socket.flush();
+                    socket.write_all(&response_cript).await?;
+                    socket.flush().await?;
                     println!("Resposta enviada: {:?}", response);
                 }
                 Err(e) => {
@@ -144,19 +147,17 @@ async fn handle_request(mut socket: TcpStream, config: &ProxyConfig) -> Result<(
     Ok(())
 }
 
-async fn process_request(
-    request: Vec<u8>,
-    is_new_end: bool,
-) -> Result<Megaresponse, Box<dyn Error>> {
+async fn process_request(request: Vec<u8>, url_destino: &String) -> Result<Megaresponse, reqwest::Error> {
+
     let send_obj = Megarequest {
         chr_serial: "1234567890123456".to_string(),
         cliente_id: 1,
         sistema_id: 1,
-        str_mensagem_terminal: String::from_utf8(request)?,
+        str_mensagem_terminal: String::from_utf8(request).unwrap(),
     };
 
     let response: Megaresponse = reqwest::Client::new()
-        .post("https://extapp.gwsvc.de/api/ConfigAPI/SetSistemaVersao/")
+        .post(url_destino)
         .json(&send_obj)
         .send()
         .await?
@@ -166,15 +167,15 @@ async fn process_request(
     Ok(response)
 }
 
-fn handle_response(mut socket: TcpStream, mensagen: String) -> Result<(), Box<dyn Error>> {
-    let mut buf = [0; 1024];
-    let mut response = String::new();
+// async fn handle_response(mut socket: TcpStream, mensagem_retorno: String) -> Result<(), Box<dyn Error>> {
+//     let mut buf = [0; 1024];
+//     let mut response = String::new();
 
-    socket.write_all(mensagen.as_bytes());
-    socket.flush();
+//     socket.write_all(mensagem_retorno.as_bytes()).await?;
+//     socket.flush().await?;
 
-    Ok(())
-}
+//     Ok(())
+// }
 
 fn cipher_vec(vec: Vec<u8>, key: u8) -> Vec<u8> {
     let mut vec_cript = vec.clone();
