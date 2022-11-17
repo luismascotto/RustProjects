@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::time::timeout;
 
 //use core::time;
 //use std::env;
@@ -70,7 +71,8 @@ struct Megaresponse {
     bin_retorno: Option<Vec<u8>>,
 }
 
-static GLOBAL_CONFIG: Lazy<ProxyConfig> = Lazy::new(||read_config_from_file("./config.json").unwrap());
+static GLOBAL_CONFIG: Lazy<ProxyConfig> =
+    Lazy::new(|| read_config_from_file("./config.json").unwrap());
 fn read_config_from_file<P: AsRef<Path>>(path: P) -> Result<ProxyConfig, Box<dyn Error>> {
     // Open the file in read-only mode with buffer.
     let file = File::open(path)?;
@@ -106,19 +108,31 @@ async fn handle_request(mut socket: TcpStream) -> Result<(), Box<dyn Error>> {
 
     let mut total_bytes = 0;
     loop {
-        let read_operation = socket.read(&mut rec_buffer).await;
+        //Só esperar 1 minuto quando for a primeira vez ou processar a mensagem toda
+        // e for aguardar um novo ciclo
+        let timeout_secs = match total_bytes {
+            0 => 60,
+            _ => 15,
+        };
+        let read_timeout = tokio::time::Duration::from_secs(timeout_secs);
+        let Ok(read_operation) = timeout(read_timeout, socket.read(&mut rec_buffer)).await else{
+            eprintln!("Timeout");
+            break;
+        };
 
         let bytes_read = match read_operation {
             Ok(count) => {
                 if count == 0 {
                     eprintln!("Falha ao ler do socket; 0 bytes");
-                    return Ok(());
+                    break;
                 }
                 count //return count
             }
             Err(e) => {
-                eprintln!("Falha ao ler do socket; err = {:?}", e);
-                return Ok(());
+                if total_bytes > 0 {
+                    eprintln!("Falha ao ler do socket; err = {:?}", e);
+                }
+                break;
             }
         };
 
@@ -130,7 +144,10 @@ async fn handle_request(mut socket: TcpStream) -> Result<(), Box<dyn Error>> {
         if total_bytes > rec_data.len() {
             rec_data.resize(total_bytes - rec_data.len() + 1, 0);
         }
-        let mut rec_cript = cipher_vec(rec_buffer.clone(), GLOBAL_CONFIG.vch_key.clone().into_bytes()[0]);
+        let mut rec_cript = cipher_vec(
+            rec_buffer.clone(),
+            GLOBAL_CONFIG.vch_key.clone().into_bytes()[0],
+        );
         rec_data.append(&mut rec_cript);
 
         let is_old_end: bool = rec_data.ends_with(b"<EOF><EOT>");
@@ -141,7 +158,10 @@ async fn handle_request(mut socket: TcpStream) -> Result<(), Box<dyn Error>> {
             match retorno {
                 Ok(response) => {
                     let response_bytes = response.str_retorno.to_owned().unwrap().into_bytes();
-                    let response_cript = cipher_vec(response_bytes.clone(), GLOBAL_CONFIG.vch_key.clone().into_bytes()[0]);
+                    let response_cript = cipher_vec(
+                        response_bytes.clone(),
+                        GLOBAL_CONFIG.vch_key.clone().into_bytes()[0],
+                    );
                     let response_final = insert_send_data_len(response_cript);
                     socket.write_all(&response_final).await?;
                     socket.flush().await?;
@@ -149,11 +169,14 @@ async fn handle_request(mut socket: TcpStream) -> Result<(), Box<dyn Error>> {
                 }
                 Err(e) => {
                     eprintln!("Falha ao processar request: {:?}", e);
-                    return Ok(());
+                    break;
                 }
             }
 
-            break;
+            //Limpar o buffer
+            rec_buffer = vec![0; 4096];
+            rec_data = vec![0; 1024];
+            total_bytes = 0;
         }
     }
 
@@ -162,11 +185,27 @@ async fn handle_request(mut socket: TcpStream) -> Result<(), Box<dyn Error>> {
 
 async fn process_request(request: Vec<u8>) -> Result<Megaresponse, reqwest::Error> {
     //TODO - Quebrar mensagem p pegar tipo, cliente e serial
+    let str_mensagem_terminal = String::from_utf8(request).unwrap();
+    let mut tokens: Vec<&str> = str_mensagem_terminal.split(";").collect();
+
+    //let tipo_mensagem = tokens[0].to_string();
+    let sistema_id: i32 = match tokens[0] {
+        "1" | "100" | "101" | "102" | "103" | "104" => 17,
+        _ => 1,
+    };
+
+    //Convert string to i32
+    let cliente_id = tokens[1].to_string().parse::<i32>().unwrap_or(0);
+    let chr_serial = tokens[2].to_string();
+
+    //Remover ClienteID do vetor
+    tokens.remove(1);
+
     let send_obj = Megarequest {
-        chr_serial: "1234567890123456".to_string(),
-        cliente_id: 1,
-        sistema_id: 1,
-        str_mensagem_terminal: String::from_utf8(request).unwrap(),
+        chr_serial,
+        cliente_id,
+        sistema_id, //shorthand initialization (se for variavel com mesmo nome do campo da struct, nao precisa especificar)
+        str_mensagem_terminal: tokens.join(";"),
     };
 
     let response: Megaresponse = reqwest::Client::new()
@@ -179,7 +218,6 @@ async fn process_request(request: Vec<u8>) -> Result<Megaresponse, reqwest::Erro
 
     Ok(response)
 }
-
 
 fn cipher_vec(vec: Vec<u8>, key: u8) -> Vec<u8> {
     let mut vec_cript = vec.clone();
