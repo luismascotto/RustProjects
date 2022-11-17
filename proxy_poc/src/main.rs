@@ -165,7 +165,7 @@ async fn handle_request(mut socket: TcpStream) -> Result<(), Box<dyn Error>> {
                     let response_final = insert_send_data_len(response_cript);
                     socket.write_all(&response_final).await?;
                     socket.flush().await?;
-                    println!("Resposta enviada: {:?}", response);
+                    eprintln!("Resposta enviada: {:?}", response);
                 }
                 Err(e) => {
                     eprintln!("Falha ao processar request: {:?}", e);
