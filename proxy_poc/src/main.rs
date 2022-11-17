@@ -58,16 +58,12 @@ struct Megarequest {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 struct Megaresponse {
-    #[serde(rename = "intCodigoRetorno")]
     int_codigo_retorno: i32,
-    #[serde(rename = "isError")]
     is_error: bool,
-    #[serde(rename = "strErrorMessage")]
     str_error_message: Option<String>,
-    #[serde(rename = "strRetorno")]
     str_retorno: Option<String>,
-    #[serde(rename = "binRetorno")]
     bin_retorno: Option<Vec<u8>>,
 }
 
@@ -150,10 +146,9 @@ async fn handle_request(mut socket: TcpStream) -> Result<(), Box<dyn Error>> {
         );
         rec_data.append(&mut rec_cript);
 
-        let is_old_end: bool = rec_data.ends_with(b"<EOF><EOT>");
-        let is_new_end: bool = rec_data.ends_with(b"<EOF><EOM>");
+        let end_of_message = rec_data.ends_with(b"<EOF><EOT>") || rec_data.ends_with(b"<EOF><EOM>");
 
-        if is_new_end || is_old_end {
+        if end_of_message {
             let retorno = process_request(rec_data.clone()).await;
             match retorno {
                 Ok(response) => {
@@ -165,7 +160,7 @@ async fn handle_request(mut socket: TcpStream) -> Result<(), Box<dyn Error>> {
                     let response_final = insert_send_data_len(response_cript);
                     socket.write_all(&response_final).await?;
                     socket.flush().await?;
-                    eprintln!("Resposta enviada: {:?}", response);
+                    //eprintln!("Resposta enviada: {:?}", response);
                 }
                 Err(e) => {
                     eprintln!("Falha ao processar request: {:?}", e);
@@ -173,7 +168,7 @@ async fn handle_request(mut socket: TcpStream) -> Result<(), Box<dyn Error>> {
                 }
             }
 
-            //Limpar o buffer
+            //Resetar buffers
             rec_buffer = vec![0; 4096];
             rec_data = vec![0; 1024];
             total_bytes = 0;
@@ -208,6 +203,8 @@ async fn process_request(request: Vec<u8>) -> Result<Megaresponse, reqwest::Erro
         str_mensagem_terminal: tokens.join(";"),
     };
 
+    eprintln!("Request REST enviado: {:?}", send_obj);
+
     let response: Megaresponse = reqwest::Client::new()
         .post(GLOBAL_CONFIG.config_url.as_str())
         .json(&send_obj)
@@ -215,6 +212,8 @@ async fn process_request(request: Vec<u8>) -> Result<Megaresponse, reqwest::Erro
         .await?
         .json()
         .await?;
+
+    eprintln!("Request REST recebido: {:?}", response);
 
     Ok(response)
 }
