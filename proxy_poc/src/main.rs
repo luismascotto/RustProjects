@@ -1,28 +1,15 @@
-//#![warn(rust_2018_idioms)]
-
-//use reqwest::IntoUrl;
-//use futures::task::ArcWake;
-//use futures::TryFutureExt;
 use serde::{Deserialize, Serialize};
-
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
-
-//use core::time;
-//use std::env;
 use std::error::Error;
-//use std::io::ErrorKind;
-//use std::thread::sleep;
-//use std::{mem, thread};
-//use std::time::Duration;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
-
 use once_cell::sync::Lazy;
-
 use bytes::{BytesMut, BufMut};
+use encoding::{Encoding, EncoderTrap};
+use encoding::all::WINDOWS_1252;
 
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -142,11 +129,8 @@ async fn handle_request(mut socket: TcpStream) -> Result<(), Box<dyn Error>> {
         //Fazer a conta dos bytes recebidos em caso de sends separados
         total_bytes += bytes_read;
 
-        println!("Bytes lidos: {:?}, Total: {:?}", bytes_read, total_bytes);
+        //println!("Bytes lidos: {:?}, Total: {:?}", bytes_read, total_bytes);
 
-        // if total_bytes > rec_data.len() {
-        //     rec_data.resize(total_bytes - rec_data.len() + 1, 0);
-        // }
         let mut rec_cript = cipher_vec(
             rec_buffer.clone(),
             GLOBAL_CONFIG.vch_key.clone().into_bytes()[0],
@@ -154,21 +138,24 @@ async fn handle_request(mut socket: TcpStream) -> Result<(), Box<dyn Error>> {
         );
         rec_data.append(&mut rec_cript);
 
-        eprint!("Buffer: {:?} ", rec_data);
+        //eprint!("Buffer: {:?} ", rec_data);
 
         let end_of_message = rec_data.ends_with(b"<EOF><EOT>") || rec_data.ends_with(b"<EOF><EOM>");
 
         if end_of_message {
             let retorno = process_request(rec_data.clone()).await;
+            let tipo_mensagem = rec_data.starts_with(b"101") || rec_data.starts_with(b"0101");
             match retorno {
                 Ok(response) => {
-                    let response_bytes = response.str_retorno.to_owned().unwrap().into_bytes();
+                    //DO Json vem como UTF-8, para o terminal precisa ser Windows-1252
+                    let response_bytes = prepare_encoding(response.str_retorno.to_owned().unwrap(), tipo_mensagem);
+                    
                     let response_cript = cipher_vec(
                         response_bytes.clone(),
                         GLOBAL_CONFIG.vch_key.clone().into_bytes()[0],
                         response_bytes.len()
                     );
-                    let response_final = insert_send_data_len(response_cript);
+                    let response_final = prepare_send_data(response_cript);
                     socket.write_all(&response_final).await?;
                     socket.flush().await?;
                     //eprintln!("Resposta enviada: {:?}", response);
@@ -194,9 +181,9 @@ async fn process_request(request: Vec<u8>) -> Result<Megaresponse, reqwest::Erro
     let str_mensagem_terminal = String::from_utf8(request).unwrap();
     let mut tokens: Vec<&str> = str_mensagem_terminal.split(";").collect();
 
-    eprintln!("Tipo Mensagem: {:?}", tokens[0]);
-    //let tipo_mensagem = tokens[0].to_string();
-    let sistema_id: i32 = match tokens[0].parse::<i32>().unwrap_or(2) { //Cair no mega em caso de erro
+    //eprintln!("Tipo Mensagem: {:?}", tokens[0]);
+    let tipo_mensagem = tokens[0].parse::<i32>().unwrap_or(2);  //Cair no mega em caso de erro
+    let sistema_id: i32 = match tipo_mensagem {
         1 | 100 | 101 | 102 | 103 | 104 => 17,
         _ => 1,
     };
@@ -215,7 +202,7 @@ async fn process_request(request: Vec<u8>) -> Result<Megaresponse, reqwest::Erro
         str_mensagem_terminal: tokens.join(";"),
     };
 
-    eprintln!("Request REST enviado: {:?}", send_obj);
+    //eprintln!("Request REST enviado: {:?}", send_obj);
 
     let response: Megaresponse = reqwest::Client::new()
         .post(GLOBAL_CONFIG.server_url.as_str())
@@ -225,7 +212,7 @@ async fn process_request(request: Vec<u8>) -> Result<Megaresponse, reqwest::Erro
         .json()
         .await?;
 
-    eprintln!("Request REST recebido: {:?}", response);
+    //eprintln!("Request REST recebido: {:?}", response);
 
     Ok(response)
 }
@@ -233,23 +220,28 @@ async fn process_request(request: Vec<u8>) -> Result<Megaresponse, reqwest::Erro
 fn cipher_vec(vec_cipher: Vec<u8>, key: u8, size:usize) -> Vec<u8> {
     let mut vec_cript:Vec<u8> = vec!();
     for i in 0..size {
-        //vec_cript.push(vec_cipher[i]^0);
-        vec_cript.push(vec_cipher[i]);
+        vec_cript.push(vec_cipher[i]^key);
+        //vec_cript.push(vec_cipher[i]);
     }
     vec_cript
 }
 
-// fn insert_send_data_len(vec: Vec<u8>) -> Vec<u8> {
-//     let mut vec_size = vec.clone();
-//     let size = vec.len();
-//     let size_bytes = size.to_be_bytes();
-//     vec_size.splice(0..0, size_bytes.iter().cloned());
-//     vec_size
-// }
 
-fn insert_send_data_len(vec: Vec<u8>) -> Vec<u8> {
+//Adicionar 4 bytes com tamannho da mensagem e @ no final
+fn prepare_send_data(vec: Vec<u8>) -> Vec<u8> {
     let mut buf = BytesMut::with_capacity(4+vec.len());
-    buf.put_u32_le(vec.len() as u32);
+    buf.put_u32_le(5+ vec.len() as u32);
     buf.put(&vec[..]);
+    buf.put_u8(b'@');
     buf.to_vec()
+}
+
+fn prepare_encoding(str: String, bypass: bool) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    if !bypass {
+        WINDOWS_1252.encode_to(str.as_str(), EncoderTrap::Ignore, &mut bytes).unwrap();
+    }else{
+        bytes = str.as_bytes().to_vec();
+    }
+    bytes
 }
