@@ -22,6 +22,9 @@ use std::path::Path;
 
 use once_cell::sync::Lazy;
 
+use bytes::{BytesMut, BufMut};
+
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase")]
 struct ProxyConfig {
@@ -83,7 +86,9 @@ fn read_config_from_file<P: AsRef<Path>>(path: P) -> Result<ProxyConfig, Box<dyn
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    eprintln!("Proxy Started...");
     loop {
+        eprintln!("{}", format!("127.0.0.1:{}", GLOBAL_CONFIG.port));
         let tcp_listener = TcpListener::bind(format!("127.0.0.1:{}", GLOBAL_CONFIG.port)).await?;
         loop {
             let (socket, _) = tcp_listener.accept().await?;
@@ -98,9 +103,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 async fn handle_request(mut socket: TcpStream) -> Result<(), Box<dyn Error>> {
-    let mut rec_buffer: Vec<u8> = vec![0; 4096]; //MAX_TX Terminal
+    let mut rec_buffer: Vec<u8> = vec!(0; 4096); //MAX_TX Terminal
                                                  //Maioria dos requests ficam no maximo em 1k
-    let mut rec_data: Vec<u8> = vec![0; 1024];
+    let mut rec_data: Vec<u8> = vec!();// = vec![0; 256];
 
     let mut total_bytes = 0;
     loop {
@@ -115,6 +120,7 @@ async fn handle_request(mut socket: TcpStream) -> Result<(), Box<dyn Error>> {
             eprintln!("Timeout");
             break;
         };
+
 
         let bytes_read = match read_operation {
             Ok(count) => {
@@ -131,20 +137,24 @@ async fn handle_request(mut socket: TcpStream) -> Result<(), Box<dyn Error>> {
                 break;
             }
         };
+        //eprintln!("receive... {:?}", rec_buffer);
 
         //Fazer a conta dos bytes recebidos em caso de sends separados
         total_bytes += bytes_read;
 
         println!("Bytes lidos: {:?}, Total: {:?}", bytes_read, total_bytes);
 
-        if total_bytes > rec_data.len() {
-            rec_data.resize(total_bytes - rec_data.len() + 1, 0);
-        }
+        // if total_bytes > rec_data.len() {
+        //     rec_data.resize(total_bytes - rec_data.len() + 1, 0);
+        // }
         let mut rec_cript = cipher_vec(
             rec_buffer.clone(),
             GLOBAL_CONFIG.vch_key.clone().into_bytes()[0],
+            bytes_read
         );
         rec_data.append(&mut rec_cript);
+
+        eprint!("Buffer: {:?} ", rec_data);
 
         let end_of_message = rec_data.ends_with(b"<EOF><EOT>") || rec_data.ends_with(b"<EOF><EOM>");
 
@@ -156,6 +166,7 @@ async fn handle_request(mut socket: TcpStream) -> Result<(), Box<dyn Error>> {
                     let response_cript = cipher_vec(
                         response_bytes.clone(),
                         GLOBAL_CONFIG.vch_key.clone().into_bytes()[0],
+                        response_bytes.len()
                     );
                     let response_final = insert_send_data_len(response_cript);
                     socket.write_all(&response_final).await?;
@@ -169,8 +180,8 @@ async fn handle_request(mut socket: TcpStream) -> Result<(), Box<dyn Error>> {
             }
 
             //Resetar buffers
-            rec_buffer = vec![0; 4096];
-            rec_data = vec![0; 1024];
+            rec_buffer.clear();
+            rec_data.clear();
             total_bytes = 0;
         }
     }
@@ -183,9 +194,10 @@ async fn process_request(request: Vec<u8>) -> Result<Megaresponse, reqwest::Erro
     let str_mensagem_terminal = String::from_utf8(request).unwrap();
     let mut tokens: Vec<&str> = str_mensagem_terminal.split(";").collect();
 
+    eprintln!("Tipo Mensagem: {:?}", tokens[0]);
     //let tipo_mensagem = tokens[0].to_string();
-    let sistema_id: i32 = match tokens[0] {
-        "1" | "100" | "101" | "102" | "103" | "104" => 17,
+    let sistema_id: i32 = match tokens[0].parse::<i32>().unwrap_or(2) { //Cair no mega em caso de erro
+        1 | 100 | 101 | 102 | 103 | 104 => 17,
         _ => 1,
     };
 
@@ -206,7 +218,7 @@ async fn process_request(request: Vec<u8>) -> Result<Megaresponse, reqwest::Erro
     eprintln!("Request REST enviado: {:?}", send_obj);
 
     let response: Megaresponse = reqwest::Client::new()
-        .post(GLOBAL_CONFIG.config_url.as_str())
+        .post(GLOBAL_CONFIG.server_url.as_str())
         .json(&send_obj)
         .send()
         .await?
@@ -218,18 +230,26 @@ async fn process_request(request: Vec<u8>) -> Result<Megaresponse, reqwest::Erro
     Ok(response)
 }
 
-fn cipher_vec(vec: Vec<u8>, key: u8) -> Vec<u8> {
-    let mut vec_cript = vec.clone();
-    for i in 0..vec.len() {
-        vec_cript[i] ^= key;
+fn cipher_vec(vec_cipher: Vec<u8>, key: u8, size:usize) -> Vec<u8> {
+    let mut vec_cript:Vec<u8> = vec!();
+    for i in 0..size {
+        //vec_cript.push(vec_cipher[i]^0);
+        vec_cript.push(vec_cipher[i]);
     }
     vec_cript
 }
 
+// fn insert_send_data_len(vec: Vec<u8>) -> Vec<u8> {
+//     let mut vec_size = vec.clone();
+//     let size = vec.len();
+//     let size_bytes = size.to_be_bytes();
+//     vec_size.splice(0..0, size_bytes.iter().cloned());
+//     vec_size
+// }
+
 fn insert_send_data_len(vec: Vec<u8>) -> Vec<u8> {
-    let mut vec_size = vec.clone();
-    let size = vec.len();
-    let size_bytes = size.to_be_bytes();
-    vec_size.splice(0..0, size_bytes.iter().cloned());
-    vec_size
+    let mut buf = BytesMut::with_capacity(4+vec.len());
+    buf.put_u32_le(vec.len() as u32);
+    buf.put(&vec[..]);
+    buf.to_vec()
 }

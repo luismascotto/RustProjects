@@ -4,7 +4,7 @@
     "TxSize": 1000,
     "VchKey": "!",
     "LogPath": "C:\\Temp\\Logs\\",
-    "ServerUrl": "http://app.barracuda.link:9293/Terminal.svc/",
+    "ServerUrl": "https://extapp.gwsvc.de/Terminal.svc/",
     "ServerAuthUrl": "http://app.barracuda.link:9293/Terminal.svc/",
     "RedirectAuth": 1,
     "RedirectAuthClient": 1,
