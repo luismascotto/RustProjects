@@ -1,36 +1,15 @@
-
-use std::ffi::OsString;
-use windows_service::{Result, service_dispatcher};
-
-define_windows_service!(ffi_service_main, my_service_main);
-
-fn my_service_main(arguments: Vec<OsString>) {
-    // The entry point where execution will start on a background thread after a call to
-    // `service_dispatcher::start` from `main`.
-}
-
-fn mainm() -> Result<()> {
-    // Register generated `ffi_service_main` with the system and start the service, blocking
-    // this thread until the service is stopped.
-    
-    
-    //service_dispatcher::start("myservice", ffi_service_main)?;
-    Ok(())
-}
-
+use bytes::{BufMut, BytesMut};
+use encoding::all::WINDOWS_1252;
+use encoding::{EncoderTrap, Encoding};
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::time::timeout;
 use std::error::Error;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
-use once_cell::sync::Lazy;
-use bytes::{BytesMut, BufMut};
-use encoding::{Encoding, EncoderTrap};
-use encoding::all::WINDOWS_1252;
-
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::time::timeout;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase")]
@@ -110,9 +89,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 async fn handle_request(mut socket: TcpStream) -> Result<(), Box<dyn Error>> {
-    let mut rec_buffer: Vec<u8> = vec!(0; 4096); //MAX_TX Terminal
+    let mut rec_buffer: Vec<u8> = vec![0; 4096]; //MAX_TX Terminal
                                                  //Maioria dos requests ficam no maximo em 1k
-    let mut rec_data: Vec<u8> = vec!();// = vec![0; 256];
+    let mut rec_data: Vec<u8> = vec![]; // = vec![0; 256];
 
     let mut total_bytes = 0;
     loop {
@@ -127,7 +106,6 @@ async fn handle_request(mut socket: TcpStream) -> Result<(), Box<dyn Error>> {
             eprintln!("Timeout");
             break;
         };
-
 
         let bytes_read = match read_operation {
             Ok(count) => {
@@ -154,7 +132,7 @@ async fn handle_request(mut socket: TcpStream) -> Result<(), Box<dyn Error>> {
         let mut rec_cript = cipher_vec(
             rec_buffer.clone(),
             GLOBAL_CONFIG.vch_key.clone().into_bytes()[0],
-            bytes_read
+            bytes_read,
         );
         rec_data.append(&mut rec_cript);
 
@@ -168,12 +146,13 @@ async fn handle_request(mut socket: TcpStream) -> Result<(), Box<dyn Error>> {
             match retorno {
                 Ok(response) => {
                     //DO Json vem como UTF-8, para o terminal precisa ser Windows-1252
-                    let response_bytes = prepare_encoding(response.str_retorno.to_owned().unwrap(), tipo_mensagem);
-                    
+                    let response_bytes =
+                        prepare_encoding(response.str_retorno.to_owned().unwrap(), tipo_mensagem);
+
                     let response_cript = cipher_vec(
                         response_bytes.clone(),
                         GLOBAL_CONFIG.vch_key.clone().into_bytes()[0],
-                        response_bytes.len()
+                        response_bytes.len(),
                     );
                     let response_final = prepare_send_data(response_cript);
                     socket.write_all(&response_final).await?;
@@ -202,7 +181,7 @@ async fn process_request(request: Vec<u8>) -> Result<Megaresponse, reqwest::Erro
     let mut tokens: Vec<&str> = str_mensagem_terminal.split(";").collect();
 
     //eprintln!("Tipo Mensagem: {:?}", tokens[0]);
-    let tipo_mensagem = tokens[0].parse::<i32>().unwrap_or(2);  //Cair no mega em caso de erro
+    let tipo_mensagem = tokens[0].parse::<i32>().unwrap_or(2); //Cair no mega em caso de erro
     let sistema_id: i32 = match tipo_mensagem {
         1 | 100 | 101 | 102 | 103 | 104 => 17,
         _ => 1,
@@ -237,20 +216,19 @@ async fn process_request(request: Vec<u8>) -> Result<Megaresponse, reqwest::Erro
     Ok(response)
 }
 
-fn cipher_vec(vec_cipher: Vec<u8>, key: u8, size:usize) -> Vec<u8> {
-    let mut vec_cript:Vec<u8> = vec!();
+fn cipher_vec(vec_cipher: Vec<u8>, key: u8, size: usize) -> Vec<u8> {
+    let mut vec_cript: Vec<u8> = vec![];
     for i in 0..size {
-        vec_cript.push(vec_cipher[i]^key);
+        vec_cript.push(vec_cipher[i] ^ key);
         //vec_cript.push(vec_cipher[i]);
     }
     vec_cript
 }
 
-
 //Adicionar 4 bytes com tamannho da mensagem e @ no final
 fn prepare_send_data(vec: Vec<u8>) -> Vec<u8> {
-    let mut buf = BytesMut::with_capacity(4+vec.len());
-    buf.put_u32_le(5+ vec.len() as u32);
+    let mut buf = BytesMut::with_capacity(4 + vec.len());
+    buf.put_u32_le(5 + vec.len() as u32);
     buf.put(&vec[..]);
     buf.put_u8(b'@');
     buf.to_vec()
@@ -259,8 +237,10 @@ fn prepare_send_data(vec: Vec<u8>) -> Vec<u8> {
 fn prepare_encoding(str: String, bypass: bool) -> Vec<u8> {
     let mut bytes = Vec::new();
     if !bypass {
-        WINDOWS_1252.encode_to(str.as_str(), EncoderTrap::Ignore, &mut bytes).unwrap();
-    }else{
+        WINDOWS_1252
+            .encode_to(str.as_str(), EncoderTrap::Ignore, &mut bytes)
+            .unwrap();
+    } else {
         bytes = str.as_bytes().to_vec();
     }
     bytes

@@ -1,0 +1,15 @@
+
+
+#RUST update
+
+rustup update stable
+
+#rodar sempre que salvar o arquivo
+cargo install cargo-watch
+cargo -x run
+
+#"Peter kotas"
+cargo install shawl
+
+#instalar serviço
+sc create my-app binPath= "C:/path/shawl.exe run -- C:/path/my-app.exe"
