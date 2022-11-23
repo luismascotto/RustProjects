@@ -14,7 +14,7 @@ use tokio::time::timeout;
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "PascalCase")]
 struct ProxyConfig {
-    port: i32,
+    tcp_listener: String,
     rec_timeout: u32,
     tx_size: u32,
     vch_key: String,
@@ -74,8 +74,8 @@ fn read_config_from_file<P: AsRef<Path>>(path: P) -> Result<ProxyConfig, Box<dyn
 async fn main() -> Result<(), Box<dyn Error>> {
     eprintln!("Proxy Started...");
     loop {
-        eprintln!("{}", format!("127.0.0.1:{}", GLOBAL_CONFIG.port));
-        let tcp_listener = TcpListener::bind(format!("127.0.0.1:{}", GLOBAL_CONFIG.port)).await?;
+        eprintln!("{}", GLOBAL_CONFIG.tcp_listener);
+        let tcp_listener = TcpListener::bind(GLOBAL_CONFIG.tcp_listener.clone()).await?;
         loop {
             let (socket, _) = tcp_listener.accept().await?;
             // A new task is spawned for each inbound socket. The socket is

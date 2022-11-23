@@ -1,5 +1,5 @@
 {
-    "Port": 49999,
+    "TcpListener": "127.0.0.1:49999",
     "RecTimeout": 1200000,
     "TxSize": 1000,
     "VchKey": "!",
