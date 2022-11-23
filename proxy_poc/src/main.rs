@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fs::File;
 use std::io::BufReader;
+use std::ops::Index;
 use std::path::Path;
+use std::str;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
@@ -53,7 +55,13 @@ struct Megaresponse {
     is_error: bool,
     str_error_message: Option<String>,
     str_retorno: Option<String>,
-    bin_retorno: Option<Vec<u8>>,
+}
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct MegaresponseMinimal {
+    int_codigo_retorno: i32,
+    is_error: bool,
+    str_error_message: Option<String>,
 }
 
 static GLOBAL_CONFIG: Lazy<ProxyConfig> =
@@ -141,18 +149,18 @@ async fn handle_request(mut socket: TcpStream) -> Result<(), Box<dyn Error>> {
         let end_of_message = rec_data.ends_with(b"<EOF><EOT>") || rec_data.ends_with(b"<EOF><EOM>");
 
         if end_of_message {
+            let tipo_mensagem_imagem = rec_data.starts_with(b"101") || rec_data.starts_with(b"0101");
             let retorno = process_request(rec_data.clone()).await;
-            let tipo_mensagem = rec_data.starts_with(b"101") || rec_data.starts_with(b"0101");
             match retorno {
                 Ok(response) => {
                     //DO Json vem como UTF-8, para o terminal precisa ser Windows-1252
                     let response_bytes =
-                        prepare_encoding(response.str_retorno.to_owned().unwrap(), tipo_mensagem);
-
+                        prepare_encoding(response.str_retorno.to_owned().unwrap(), tipo_mensagem_imagem);
+                    let len = response_bytes.len();
                     let response_cript = cipher_vec(
-                        response_bytes.clone(),
+                        response_bytes,
                         GLOBAL_CONFIG.vch_key.clone().into_bytes()[0],
-                        response_bytes.len(),
+                        len,
                     );
                     let response_final = prepare_send_data(response_cript);
                     socket.write_all(&response_final).await?;
@@ -180,8 +188,9 @@ async fn process_request(request: Vec<u8>) -> Result<Megaresponse, reqwest::Erro
     let str_mensagem_terminal = String::from_utf8(request).unwrap();
     let mut tokens: Vec<&str> = str_mensagem_terminal.split(";").collect();
 
-    //eprintln!("Tipo Mensagem: {:?}", tokens[0]);
+    eprintln!("Tipo Mensagem STR: {:?}", tokens[0]);
     let tipo_mensagem = tokens[0].parse::<i32>().unwrap_or(2); //Cair no mega em caso de erro
+    eprintln!("Tipo Mensagem i32: {:?}", tipo_mensagem);
     let sistema_id: i32 = match tipo_mensagem {
         1 | 100 | 101 | 102 | 103 | 104 => 17,
         _ => 1,
@@ -203,17 +212,53 @@ async fn process_request(request: Vec<u8>) -> Result<Megaresponse, reqwest::Erro
 
     //eprintln!("Request REST enviado: {:?}", send_obj);
 
-    let response: Megaresponse = reqwest::Client::new()
-        .post(GLOBAL_CONFIG.server_url.as_str())
+    if tipo_mensagem == 101 {
+        
+        let content = reqwest::Client::new().post(GLOBAL_CONFIG.server_url.as_str())
         .json(&send_obj)
         .send()
         .await?
-        .json()
+        .text()
         .await?;
 
-    //eprintln!("Request REST recebido: {:?}", response);
+        eprintln!("Request TEXT IMG recebido: {:?}", content);
 
-    Ok(response)
+        let check_response : MegaresponseMinimal = serde_json::from_str(content.as_str()).unwrap();
+        if check_response.is_error{
+            return Ok(Megaresponse{
+                int_codigo_retorno: check_response.int_codigo_retorno,
+                is_error: check_response.is_error,
+                str_error_message: check_response.str_error_message,
+                str_retorno: None,
+            });
+        }
+
+        let bin_ret = &content[content.find("binRetorno").unwrap()+13..content.len()-3];
+
+        let response_final = Megaresponse {
+            int_codigo_retorno: check_response.int_codigo_retorno,
+            is_error: check_response.is_error,
+            str_error_message : check_response.str_error_message,
+            str_retorno: Some(bin_ret.to_string()),
+            
+        };
+
+        Ok(response_final)
+
+    }else{
+        let response: Megaresponse = reqwest::Client::new()
+                .post(GLOBAL_CONFIG.server_url.as_str())
+                .json(&send_obj)
+                .send()
+                .await?
+                .json()
+                .await?;
+
+        eprintln!("Request REST recebido: {:?}", response);
+
+        Ok(response)
+    }
+
 }
 
 fn cipher_vec(vec_cipher: Vec<u8>, key: u8, size: usize) -> Vec<u8> {
