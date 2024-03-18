@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fs::File;
 use std::io::BufReader;
-use std::ops::Index;
 use std::path::Path;
 use std::str;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -55,6 +54,7 @@ struct Megaresponse {
     is_error: bool,
     str_error_message: Option<String>,
     str_retorno: Option<String>,
+    bin_response: Option<Vec<u8>>,
 }
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -154,8 +154,20 @@ async fn handle_request(mut socket: TcpStream) -> Result<(), Box<dyn Error>> {
             match retorno {
                 Ok(response) => {
                     //DO Json vem como UTF-8, para o terminal precisa ser Windows-1252
-                    let response_bytes =
-                        prepare_encoding(response.str_retorno.to_owned().unwrap(), tipo_mensagem_imagem);
+                    let response_bytes: Vec<u8>;
+                    if tipo_mensagem_imagem {
+                        let ret = response.bin_response;
+                        if ret.is_none() {
+                            eprintln!("Erro ao processar imagem");
+                            response_bytes = prepare_encoding(response.str_retorno.to_owned().unwrap(), tipo_mensagem_imagem);
+                            //break;
+                        }else{
+                            response_bytes = ret.unwrap();
+                        }
+                        //response_bytes = ret.unwrap();
+                    } else {
+                        response_bytes = prepare_encoding(response.str_retorno.to_owned().unwrap(), tipo_mensagem_imagem);
+                    }
                     let len = response_bytes.len();
                     let response_cript = cipher_vec(
                         response_bytes,
@@ -211,53 +223,67 @@ async fn process_request(request: Vec<u8>) -> Result<Megaresponse, reqwest::Erro
     };
 
     //eprintln!("Request REST enviado: {:?}", send_obj);
-
-    if tipo_mensagem == 101 {
-        
-        let content = reqwest::Client::new().post(GLOBAL_CONFIG.server_url.as_str())
+    let response: Megaresponse = reqwest::Client::new()
+        .post(GLOBAL_CONFIG.server_url.as_str())
         .json(&send_obj)
         .send()
         .await?
-        .text()
+        .json()
         .await?;
 
-        eprintln!("Request TEXT IMG recebido: {:?}", content);
+    eprintln!("Request REST recebido: {:?}", response);
 
-        let check_response : MegaresponseMinimal = serde_json::from_str(content.as_str()).unwrap();
-        if check_response.is_error{
-            return Ok(Megaresponse{
-                int_codigo_retorno: check_response.int_codigo_retorno,
-                is_error: check_response.is_error,
-                str_error_message: check_response.str_error_message,
-                str_retorno: None,
-            });
-        }
+    Ok(response)
 
-        let bin_ret = &content[content.find("binRetorno").unwrap()+13..content.len()-3];
+    // if tipo_mensagem == 101 {
+        
+    //     let content = reqwest::Client::new()
+    //             .post(GLOBAL_CONFIG.server_url.as_str())
+    //             .json(&send_obj)
+    //             .send()
+    //             .await?
+    //             .text()
+    //             .await?;
 
-        let response_final = Megaresponse {
-            int_codigo_retorno: check_response.int_codigo_retorno,
-            is_error: check_response.is_error,
-            str_error_message : check_response.str_error_message,
-            str_retorno: Some(bin_ret.to_string()),
+    //     eprintln!("Request TEXT IMG recebido: {:?}", content);
+
+    //     let check_response : MegaresponseMinimal = serde_json::from_str(content.as_str()).unwrap();
+    //     if check_response.is_error{
+    //         return Ok(Megaresponse{
+    //             int_codigo_retorno: check_response.int_codigo_retorno,
+    //             is_error: check_response.is_error,
+    //             str_error_message: check_response.str_error_message,
+    //             str_retorno: None,
+    //             bin_response: None,
+    //         });
+    //     }
+
+    //     let bin_ret = &content[content.find("binRetorno").unwrap()+13..content.len()-3];
+
+    //     let response_final = Megaresponse {
+    //         int_codigo_retorno: check_response.int_codigo_retorno,
+    //         is_error: check_response.is_error,
+    //         str_error_message : check_response.str_error_message,
+    //         str_retorno: Some(bin_ret.to_string()),
+    //         bin_response: check_response.bin_response
             
-        };
+    //     };
 
-        Ok(response_final)
+    //     Ok(response_final)
 
-    }else{
-        let response: Megaresponse = reqwest::Client::new()
-                .post(GLOBAL_CONFIG.server_url.as_str())
-                .json(&send_obj)
-                .send()
-                .await?
-                .json()
-                .await?;
+    // }else{
+    //     let response: Megaresponse = reqwest::Client::new()
+    //             .post(GLOBAL_CONFIG.server_url.as_str())
+    //             .json(&send_obj)
+    //             .send()
+    //             .await?
+    //             .json()
+    //             .await?;
 
-        eprintln!("Request REST recebido: {:?}", response);
+    //     eprintln!("Request REST recebido: {:?}", response);
 
-        Ok(response)
-    }
+    //     Ok(response)
+    // }
 
 }
 
