@@ -1,93 +1,65 @@
-use std::fs;
-use serde::{Deserialize, Serialize};
-use std::process::Command;
-use std::io::ErrorKind;
+mod ff;
 
 fn main() {
-    if !command_exists("ffprobe") {
+    if !ff::ffprobe_command_exists() {
         println!("ffprobe not found in PATH");
+        return;
+    }
+    if !ff::ffmpeg_command_exists() {
+        println!("ffmpeg not found in PATH");
         return;
     }
     let args: Vec<String> = std::env::args().collect();
 
-    //println!("Received {} argument(s):", args.len());
-    for (_i, arg) in args.iter().skip(1).enumerate() {
-        println!("Checking file: {}", arg);
-        match fs::metadata(arg) {
-            Ok(_metad) => {
-                match ffprobe_subtitles(arg) {
-                    Ok(ffprobe_output) => {
-                        println!("Subtitles: {:?}", ffprobe_output);
+    for (_, file_path) in args.iter().skip(1).enumerate() {
+        println!("Checking file: {}", file_path);
+        if !ff::valid_input_file(file_path) {
+            println!("Invalid input file");
+            continue;
+        }
+        match ff::probe_subtitles(file_path) {
+            Ok(ffprobe_output) => {
+                if ffprobe_output.streams.is_empty() {
+                    println!("No subtitles found");
+                    continue;
+                }
+                println!("Subtitles: {:?}", ffprobe_output);
+
+                let eng_subtitles = ffprobe_output
+                    .streams
+                    .iter()
+                    .filter(|s| s.tags.language == "eng")
+                    .collect::<Vec<_>>();
+                if eng_subtitles.is_empty() {
+                    println!("No eng subtitles found");
+                    continue;
+                }
+
+                let subtitle_to_extract = eng_subtitles
+                    .iter()
+                    .find(|s| s.tags.title == "English")
+                    .unwrap_or_else(|| {
+                        println!("No English subtitle found. Getting first eng");
+                        eng_subtitles.first().unwrap()
+                    });
+
+                let subtitle_codec = &subtitle_to_extract.codec_name;
+
+                let output_path = file_path.replace(".mkv", &format!(".{}", subtitle_codec));
+                match ff::extract_subtitle(file_path, subtitle_to_extract.index, &output_path) {
+                    Ok(_) => {
+                        println!("Subtitle extracted successfully to {}", output_path);
                     }
                     Err(e) => {
-                        println!("FFProbe Error: {}", e);
+                        println!("extract subtitle error: {}", e);
                     }
                 }
             }
             Err(e) => {
-                println!("File Error: {}", e);
+                println!("ffprobe error: {}", e);
             }
         }
+
         println!();
-    }
-
-    // print!("Press Enter to exit...");
-    // io::stdout().flush().unwrap();
-    // let mut _input = String::new();
-    // io::stdin().read_line(&mut _input).unwrap();
-}
-
-
-#[derive(Debug, Serialize, Deserialize)]
-struct FfprobeOutput {
-    streams: Vec<Subtitle>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct Subtitle {
-    index: u32,
-    codec_name: String,
-    codec_tag_string: String,
-    codec_long_name: String,
-    tags: Tag,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct Tag {
-    language: String,
-    title: String,
-}
-
-fn ffprobe_subtitles(file_path: &str) -> Result<FfprobeOutput, Box<dyn std::error::Error>> {
-    let output = Command::new("ffprobe")
-        .arg("-v")
-        .arg("error")
-        .arg("-select_streams")
-        .arg("s")
-        .arg("-show_entries")
-        .arg("stream=index,codec_name,codec_tag_string,codec_long_name:stream_tags=language,title")
-        .arg("-of")
-        .arg("json")
-        .arg(file_path)
-        .output()?;
-    
-
-    let stdout = String::from_utf8(output.stdout)?;
-    let ffprobe_output: FfprobeOutput = serde_json::from_str(&stdout)?;
-    
-    Ok(ffprobe_output)
-}
-
-fn command_exists(cmd: &str) -> bool {
-    match Command::new(cmd).spawn() {
-        Ok(mut child) => {
-            // The command exists and started. Kill it immediately to avoid side effects.
-            let _ = child.kill();
-            true
-        }
-        Err(e) => {
-            // ErrorKind::NotFound explicitly means the executable is missing
-            e.kind() != ErrorKind::NotFound
-        }
     }
 }
